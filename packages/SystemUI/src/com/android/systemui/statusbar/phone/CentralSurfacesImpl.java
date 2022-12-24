@@ -301,6 +301,8 @@ public class CentralSurfacesImpl extends CoreStartable implements
 
     private static final String STATUS_BAR_BRIGHTNESS_CONTROL =
             "system:" + Settings.System.STATUS_BAR_BRIGHTNESS_CONTROL;
+    private static final String DISPLAY_CUTOUT_HIDDEN =
+            "customsystem:" + Settings.System.DISPLAY_CUTOUT_HIDDEN;
     private static final String FORCE_SHOW_NAVBAR =
             "system:" + Settings.System.FORCE_SHOW_NAVBAR;
     private static final String LESS_BORING_HEADS_UP =
@@ -726,6 +728,9 @@ public class CentralSurfacesImpl extends CoreStartable implements
 
     private final InteractionJankMonitor mJankMonitor;
 
+    private boolean mDisplayCutoutHidden;
+    private Handler mRefreshNavbarHandler;
+
     private final OnBackInvokedCallback mOnBackInvokedCallback = () -> {
         if (DEBUG) {
             Log.d(TAG, "mOnBackInvokedCallback() called");
@@ -833,7 +838,8 @@ public class CentralSurfacesImpl extends CoreStartable implements
             WiredChargingRippleController wiredChargingRippleController,
             TunerService tunerService,
             IDreamManager dreamManager,
-            BurnInProtectionController burnInProtectionController) {
+            BurnInProtectionController burnInProtectionController,
+	    @Main Handler refreshNavbarHandler) {
         super(context);
         mNotificationsController = notificationsController;
         mFragmentService = fragmentService;
@@ -920,6 +926,7 @@ public class CentralSurfacesImpl extends CoreStartable implements
         mLockscreenShadeTransitionController = lockscreenShadeTransitionController;
         mStartingSurfaceOptional = startingSurfaceOptional;
         mDreamManager = dreamManager;
+	mRefreshNavbarHandler = refreshNavbarHandler;
         lockscreenShadeTransitionController.setCentralSurfaces(this);
         statusBarWindowStateController.addListener(this::onStatusBarWindowStateChanged);
 
@@ -978,6 +985,7 @@ public class CentralSurfacesImpl extends CoreStartable implements
         mTunerService.addTunable(this, FORCE_SHOW_NAVBAR);
         mTunerService.addTunable(this, LESS_BORING_HEADS_UP);
         mTunerService.addTunable(this, RETICKER_STATUS);
+	mTunerService.addTunable(this, DISPLAY_CUTOUT_HIDDEN);
 
         mWindowManager = (WindowManager) mContext.getSystemService(Context.WINDOW_SERVICE);
 
@@ -2037,6 +2045,36 @@ public class CentralSurfacesImpl extends CoreStartable implements
     @Override
     public void setBarStateForTest(int state) {
         mState = state;
+    }
+
+    private void updateCutoutOverlay(boolean displayCutoutHidden) {
+        boolean needsRefresh = mDisplayCutoutHidden != displayCutoutHidden;
+        mDisplayCutoutHidden = displayCutoutHidden;
+        try {
+            mOverlayManager.setEnabled("org.pixelexperience.overlay.hidecutout",
+                        mDisplayCutoutHidden, mLockscreenUserManager.getCurrentUserId());
+        } catch (RemoteException ignored) {
+        }
+        if (needsRefresh){
+            refreshNavbarOverlay();
+        }
+    }
+
+    private void refreshNavbarOverlay() {
+        final String overlayPackageName = "org.pixelexperience.overlay.dummycutout";
+        try{
+            mOverlayManager.setEnabled(overlayPackageName,
+                false, UserHandle.USER_CURRENT);
+        } catch (RemoteException ignored) {
+        }
+        mRefreshNavbarHandler.removeCallbacksAndMessages(null);
+        mRefreshNavbarHandler.postDelayed(() -> {
+            try{
+                mOverlayManager.setEnabled(overlayPackageName,
+                    true, UserHandle.USER_CURRENT);
+            } catch (RemoteException ignored) {
+            }
+        }, 1000);
     }
 
     static class AnimateExpandSettingsPanelMessage {
@@ -4564,6 +4602,9 @@ public class CentralSurfacesImpl extends CoreStartable implements
                 } else {
                     if (hasNavbar) {
                         mNavigationBarController.onDisplayRemoved(mDisplayId);
+		} else {
+		    if (DISPLAY_CUTOUT_HIDDEN.equals(key)) {
+		       updateCutoutOverlay(TunerService.parseIntegerSwitch(newValue, false));
                     }
                 }
                 break;
